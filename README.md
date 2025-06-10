@@ -35,6 +35,6 @@ MAIN_DIR/ (e.g. /data/qiyu/mRNAcap)
 
 ## 🚀 Steps 
 1. Clone the GitHub repository to your local directory.
-2. Configure the package and reference directory as outlined in **`config.sh`**.
-3. Copy **`submit_jobs.sh`** into run-specific folders, fill in your sample information, and execute it using: `bash ./submit_jobs.sh`.
-4. Locate the final combined count matrix** at: `4_counts/combined_all_new_counts.txt`.
+2. Configure the package and reference directory as outlined in `config.sh`.
+3. Copy `submit_jobs.sh` into run-specific folders, fill in your sample information, and execute it using: `bash ./submit_jobs.sh`.
+4. Locate the final combined count matrix at: `4_counts/combined_all_new_counts.txt`.
