@@ -1,0 +1,277 @@
+
+
+```{r}
+library(DESeq2)
+library("dplyr")
+library("ggplot2")
+library('biomaRt')
+library(stringr)
+library(pheatmap)
+library(RColorBrewer)
+library(stats)
+library(ggpubr)
+library(ggpmisc)
+library(ggpointdensity)
+library(ggrepel)
+library(EnhancedVolcano)
+library(msigdbr)
+library(clusterProfiler)
+library("org.Hs.eg.db")
+```
+
+#read file
+```{r}
+datapath <- "/Users/chaoyuka/Desktop/Data/For_timevault_paper/Fig2/Code/all_gex_matrix_genename.txt"
+metadatapath <- "/Users/chaoyuka/Desktop/Data/For_timevault_paper/Fig2/Code/metadata_DMOG.csv"
+out_path <- "/Users/chaoyuka/Desktop/Data/For_timevault_paper/Fig2/Code/"
+gex <- as.matrix(read.delim(datapath,sep="\t", check.names = FALSE))
+metadata <- read.csv(metadatapath,header = TRUE,row.names = "sample")
+rownames(gex) <- gex[,1]
+```
+
+
+#subset samples
+```{r}
+#DA = DMOGpast, recorded/captured
+#DB = DMOGpresent, recorded/captured
+#DD = Negative control, recorded/captured
+
+#DAxc = DMOGpast, cytosol
+#DBxc = DMOGpresent, cytosol
+#DDxc = Negative control, cytosol
+
+columns_of_interest_AB_cap <- c("DA1","DA2","DA3","DB1","DB2","DB3")
+columns_of_interest_AD_cap <- c("DA1","DA2","DA3","DD1","DD2","DD3")
+columns_of_interest_BD_cap <- c("DB1","DB2","DB3","DD1","DD2","DD3")
+columns_of_interest_AB_lysate <- c("DA1c","DA2c","DA3c","DB1c","DB2c","DB3c") # c means cytosol fraction
+columns_of_interest_AD_lysate <- c("DA1c","DA2c","DA3c","DD1c","DD2c","DD3c")
+columns_of_interest_BD_lysate <- c("DB1c","DB2c","DB3c","DD1c","DD2c","DD3c")
+
+metadata_AB <- metadata[c(1,2,3,7,8,9), , drop = FALSE]
+metadata_AD <- metadata[c(1,2,3,13,14,15), , drop = FALSE]
+metadata_BD <- metadata[c(7,8,9,13,14,15), , drop = FALSE]
+metadata_ABc <- metadata[c(4,5,6,10,11,12), , drop = FALSE]
+metadata_ADc <- metadata[c(4,5,6,16,17,18), , drop = FALSE]
+metadata_BDc <- metadata[c(10,11,12,16,17,18), , drop = FALSE]
+
+gex_sub_AB <- gex[, columns_of_interest_AB_cap]
+gex_sub_AD <- gex[, columns_of_interest_AD_cap]
+gex_sub_BD <- gex[, columns_of_interest_BD_cap]
+gex_sub_ABc <- gex[, columns_of_interest_AB_lysate]
+gex_sub_ADc <- gex[, columns_of_interest_AD_lysate]
+gex_sub_BDc <- gex[, columns_of_interest_BD_lysate]
+
+class(gex_sub_AB) <- "numeric"
+class(gex_sub_AD) <- "numeric"
+class(gex_sub_BD) <- "numeric"
+class(gex_sub_ABc) <- "numeric"
+class(gex_sub_ADc) <- "numeric"
+class(gex_sub_BDc) <- "numeric"
+
+gex_sub<-na.omit(gex_sub_AB) 
+gex_sub<-na.omit(gex_sub_AD) 
+gex_sub<-na.omit(gex_sub_ABc) 
+gex_sub<-na.omit(gex_sub_ABc) 
+gex_sub<-na.omit(gex_sub_ADc) 
+gex_sub<-na.omit(gex_sub_BDc) 
+```
+
+
+
+```{r}
+#create DEseq object
+dds_AB <- DESeqDataSetFromMatrix(countData = gex_sub_AB, colData = metadata_AB, design = ~ group)
+dds_AD <- DESeqDataSetFromMatrix(countData = gex_sub_AD, colData = metadata_AD, design = ~ group)
+dds_BD <- DESeqDataSetFromMatrix(countData = gex_sub_BD, colData = metadata_BD, design = ~ group)
+dds_ABc <- DESeqDataSetFromMatrix(countData = gex_sub_ABc, colData = metadata_ABc, design = ~ group)
+dds_ADc <- DESeqDataSetFromMatrix(countData = gex_sub_ADc, colData = metadata_ADc, design = ~ group)
+dds_BDc <- DESeqDataSetFromMatrix(countData = gex_sub_BDc, colData = metadata_BDc, design = ~ group)
+
+#filter total gene counts <10
+
+dds_AB <- dds_AB[rowSums(counts(dds_AB)) >= 10,]
+dds_AD <- dds_AD[rowSums(counts(dds_AD)) >= 10,]
+dds_BD <- dds_BD[rowSums(counts(dds_BD)) >= 10,]
+dds_ABc <- dds_ABc[rowSums(counts(dds_ABc)) >= 10,]
+dds_ADc <- dds_ADc[rowSums(counts(dds_ADc)) >= 10,]
+dds_BDc <- dds_BDc[rowSums(counts(dds_BDc)) >= 10,]
+
+#assign group
+dds_AB$group <- factor(dds_AB$group, levels = c("DA","DB"))
+dds_AD$group <- factor(dds_AD$group, levels = c("DA","DD"))
+dds_BD$group <- factor(dds_BD$group, levels = c("DB","DD"))
+dds_ABc$group <- factor(dds_ABc$group, levels = c("DAc","DBc"))
+dds_ADc$group <- factor(dds_ADc$group, levels = c("DAc","DDc"))
+dds_BDc$group <- factor(dds_BDc$group, levels = c("DBc","DDc"))
+
+#perform DEseq
+dds_AB <- DESeq(dds_AB)
+dds_AD <- DESeq(dds_AD)
+dds_BD <- DESeq(dds_BD)
+dds_ABc <- DESeq(dds_ABc)
+dds_ADc <- DESeq(dds_ADc)
+dds_BDc <- DESeq(dds_BDc)
+
+#extract result (FC and Padj)
+res_AB <- results(dds_AB)
+res_AD <- results(dds_AD)
+res_BD <- results(dds_BD)
+res_ABc <- results(dds_ABc)
+res_ADc <- results(dds_ADc)
+res_BDc <- results(dds_BDc)
+```
+#Hallmark Gene Enrichment Analysis
+```{r}
+#assign res for analysis
+res <- res_AB
+all_genes <- as.character(rownames(res))
+
+#Extract significant results
+signif_res <- res[res$padj < 1E-2 & !is.na(res$padj) & res$log2FoldChange > 0.25, ] #for capture P value < 0.01. FC > 0.25 ; for lysate P value < 0.01. FC > 0.5
+signif_genes <- as.character(rownames(signif_res))
+signif_gene_fc_list <- DataFrame(signif_genes,signif_res$log2FoldChange)
+
+#sort gene list. ## if negative take abs
+geneList = abs(signif_gene_fc_list[,2])
+
+## named vector
+names(geneList) = as.character(signif_gene_fc_list[,1])
+
+## decreasing order
+geneList = sort(geneList, decreasing = TRUE)
+
+# Extract hallmark gene set human
+all_gene_sets = msigdbr(species = "Homo sapiens")
+m_t2g <- msigdbr(species = "Homo sapiens",category = "H") %>% dplyr::select(gs_name, gene_symbol)
+
+# Perform enricher using Hallmark
+em <- enricher(signif_genes, TERM2GENE=m_t2g)
+
+#plot dots
+dotplot(em, showCategory=10, font.size = 14,x = "Count")+scale_color_gradient(low = "red", high = "deepskyblue3")
+
+#save plot
+#ggsave(file.path(out_path, "Hallmark_dot_A_capture_vsB.pdf"), p_H_dot, dpi = 300, width = 8, height = 6)
+
+#save enricher result
+#write.csv(em@result, "/Users/chaoyuka/Desktop/Data/For_timevault_paper/Fig2/Code/Hallmark_data_eB_AB_cap_FCp25_pval1Em2.csv")
+```
+
+
+
+#volcano plot
+```{r}
+#select which part to plot
+res<-res_AB
+
+#select gene of interest
+gene_of_interest = c('HILPDA','ANKRD37','EOLA1','NPM1',"RRS1","RRP1","BTF3-DT","GTF2A2","LINC01783","SMAD8","MX2",'BNIP3L',"NPM1P39","UBC",'ALDH16A1','RELL2','NKX2-8','ACSL3',"LINC01783","LDHA","ALDOA","PGK1","P4HA1")
+
+#set cut off value
+FCCutoff = 0.25
+pCutoff = 1e-2
+
+#set colors
+keyvals.colour <- ifelse(
+    res$log2FoldChange < -1*FCCutoff & res$padj < pCutoff, 'deepskyblue3',
+      ifelse(res$log2FoldChange > FCCutoff & res$padj < pCutoff, 'red',
+        'grey'))
+  keyvals.colour[is.na(keyvals.colour)] <- 'grey'
+  names(keyvals.colour)[keyvals.colour == 'red'] <- 'Downregulated'
+  names(keyvals.colour)[keyvals.colour == 'grey'] <- 'No change'
+  names(keyvals.colour)[keyvals.colour == 'deepskyblue3'] <- 'Upregulated'
+
+#draw volcano plot
+p_vol_AB_cap <- EnhancedVolcano(res,
+    lab = rownames(res),
+    x = 'log2FoldChange',
+    y = 'padj',
+    pCutoff = pCutoff, #lysate 5 captured 2
+    FCcutoff = FCCutoff, #lysate 0.5 captured 0.25
+    ylim = c(0,15),
+    xlim = c(-2,2),
+    border = 'full',
+    colCustom = keyvals.colour,
+    pointSize = 8.0,#was8
+    labSize = 7.0,#was7
+    axisLabSize= 30.0,
+    boxedLabels = FALSE, drawConnectors = TRUE,widthConnectors = 0.5,
+    legendPosition = 'none',title = NULL,subtitle = NULL,
+    gridlines.minor=FALSE, gridlines.major=FALSE)#,selectLab = gene_of_interest)
+
+#ggsave(file.path(out_path, "vol_AB_captured.pdf"), p_vol_AB_cap, dpi = 300, width = 10, height = 10)
+```
+
+
+#Heatmap
+```{r}
+#select which sample to plot
+dds <- dds_AB
+
+#check individual gene
+data <- plotCounts(dds, gene='LDHA', intgroup="group", returnData=TRUE)
+data$sample <- rownames(data)
+ggplot(data=data, aes(x=group, y=count, label=sample)) +
+  geom_point() +
+  geom_label_repel(min.segment.length=0) +  theme(axis.title = element_text(size = 20),axis.text = element_text(size = 20))
+
+
+# Z score plotting
+vsd2 <- assay(vst(dds))
+Z <- t(scale(t(vsd2)))
+
+# select gene of interest
+subset_Z <- Z[c("LDHA","ALDOA","TPI1","ENO1","PGK1","PDK1","P4HA1","DHRS2","CXCR4"), ]
+
+# select scale
+breaksList = seq(-2, 2, by = 0.025)
+
+# plot heatmap
+p_heat <- pheatmap(subset_Z,
+        cluster_rows = FALSE,
+        cluster_cols = FALSE,
+        display_numbers = FALSE,
+        cellheight = 15,
+        cellwidth = 40,
+        fontsize_row = 15,          
+        fontsize_col = 15,
+        fontsize = 15,
+        angle_col = 45,
+        gaps_row = c(9),
+        treeheight_col = 20,
+        breaks = breaksList,
+        color = colorRampPalette(c("#1396CB", "white", "#FF5955"))(length(breaksList)))
+
+
+# save heatmap
+#ggsave(file.path(out_path, "Heatmap_BD_lysate.pdf"), p_heat, dpi = 300, width = 10, height = 10)
+
+
+```
+
+#plot 2D dot plot for Hallmark enrichment
+```{r}
+#filtered and group labeled enrichment analysis (example in Enrichment_analysis.xlsx)
+
+Enrichment_analysis <- read.table(pipe("pbpaste"), sep="\t", header = TRUE)
+
+Enrichment_analysis[Enrichment_analysis == ''] <- NA
+
+Enrich_plot <- ggplot(Enrichment_analysis, aes(x = name, y = Enrichedpathways, color = padj, size = GeneRatio)) +
+  geom_point(alpha = 0.8,na.rm = TRUE) +
+  labs(
+    title = "",
+    x = "sample",
+    y = "Pathways",
+    color = "padj",
+    size = "GeneRatio"
+  ) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid.minor = element_blank(),panel.grid.major = element_blank()) +
+  scale_color_gradient(low = "red",  high = "lightgrey",limits = c(1E-20,0.05))+
+  scale_size(range = c(8,15))
+
+
+#ggsave(file.path(out_path, "Enrichplot_Hallmark_dot_all2.pdf"), Enrich_plot, dpi = 300, width = 18, height = 4)
+```
