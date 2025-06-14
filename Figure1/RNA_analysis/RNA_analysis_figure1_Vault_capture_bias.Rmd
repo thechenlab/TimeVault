@@ -1,0 +1,329 @@
+
+
+```{r}
+library(DESeq2)
+library("dplyr")
+library("ggplot2")
+library('biomaRt')
+library(stringr)
+library(pheatmap)
+library(RColorBrewer)
+library(stats)
+library(ggpubr)
+library(ggpmisc)
+library(ggpointdensity)
+library(ggrepel)
+library(ggbreak)
+library(EnhancedVolcano)
+library(msigdbr)
+library(clusterProfiler)
+library("org.Hs.eg.db")
+```
+
+#data input and define path
+```{r}
+datapath <- "/Users/chaoyuka/Desktop/Data/For_timevault_paper/Fig1/code/matrix_counts_Vault_cap_bias.txt"
+metadatapath <- "/Users/chaoyuka/Desktop/Data/For_timevault_paper/Fig1/code/metadata_Vault.csv"
+out_path <- "/Users/chaoyuka/Desktop/Data/For_timevault_paper/Fig1/code/"
+
+gex <- as.matrix(read.delim(datapath,sep="\t"))
+metadata <- read.csv(metadatapath,header = TRUE,row.names = "sample")
+rownames(gex) <- gex[,1]
+```
+
+
+#extract transcript length from bioMart
+```{r}
+# Extract gene name from GEX matrix
+ensembl_list <- row.names(gex)
+# Extract human data from Mart
+human <- useMart("ensembl", dataset="hsapiens_gene_ensembl")
+gene_coords=getBM(attributes=c("hgnc_symbol", "transcript_length","ensembl_gene_id", "start_position","end_position"), filters="hgnc_symbol", values=ensembl_list, mart=human)
+
+
+# Group by gene ID and calculate the mean transcript length
+avg_isoform_length <- gene_coords %>%
+  group_by(hgnc_symbol) %>%
+  summarize(avg_length = mean(transcript_length, na.rm = TRUE))
+avg_length <- avg_isoform_length[,2]
+
+# Check if NA is presented
+sum(is.na(avg_length))
+
+#plot to see the distribution
+hist(avg_isoform_length$avg_length, 
+     main = "Histogram of transcript length", 
+     xlab = "avg_transcript_length", 
+     ylab = "Frequency", 
+     col = "lightblue", 
+     border = "black", xlim = c(0,5000), breaks = 5000)
+
+```
+
+#subset samples for capture bias and toxicity
+```{r}
+#subset samples for capture bias and toxicity
+columns_of_interest_cap_bias <- c("pp_1","pp_1_cyto","pp_2","pp_2_cyto","pp_3","pp_3_cyto") #pp = transfected+;Dox+
+columns_of_interest_toxicity <- c("pm_1_cyto","pm_2_cyto","pm_3_cyto","pp_1_cyto","pp_2_cyto","pp_3_cyto") #pm = transfected, Dox-; pp = transfected, Dox+
+
+metadata_cap_bias <- metadata[c(4,5,6,7,8,9), , drop = FALSE]
+metadata_toxicity <- metadata[c(1,2,3,5,7,9), , drop = FALSE]
+
+gex_sub_cap_bias <- gex[, columns_of_interest_cap_bias]
+gex_sub_toxicity <- gex[, columns_of_interest_toxicity]
+
+class(gex_sub_cap_bias) <- "numeric"
+class(gex_sub_toxicity) <- "numeric"
+
+gex_sub_cap_bias<-na.omit(gex_sub_cap_bias) 
+gex_sub_toxicity<-na.omit(gex_sub_toxicity) 
+
+#check how many genes are detected
+count <- sum(gex_sub_cap_bias[,1] > 1)
+```
+
+#TPM plot of capture bias
+```{r}
+#subset capture bias samples with geneid retained
+columns_of_interest_w_name <- c("Geneid","pp_1","pp_1_cyto","pp_2","pp_2_cyto","pp_3","pp_3_cyto")		
+gex_sub_name <- gex[, columns_of_interest_w_name]
+colnames(gex_sub_name)[colnames(gex_sub_name) == "Geneid"] <- "hgnc_symbol"
+gex_sub_name<-na.omit(gex_sub_name) 
+
+#merge avg transcript length and gex for TPM calculation
+gex_sub_w_length <- inner_join(avg_isoform_length, data.frame(gex_sub_name), by = "hgnc_symbol")
+gex_sub_w_length <- as.data.frame(gex_sub_w_length)
+rownames(gex_sub_w_length) <- gex_sub_w_length[,1]
+gex_sub_w_length <- as.data.frame(gex_sub_w_length[,-1])
+
+#TPM normalization
+gex_sub_w_length <- gex_sub_w_length %>%  mutate(across(where(is.character), as.numeric))
+gex_sub_rate <- gex_sub_w_length[,2:7] / gex_sub_w_length$avg_length
+gex_sub_tpm_matrix <- t( t(gex_sub_rate) * 1e6 / colSums(gex_sub_rate, na.rm = TRUE) )
+gex_sub_tpm_matrix <- data.frame(gex_sub_tpm_matrix)
+
+#filter all zero counts row < 1
+keep <- rowSums(gex_sub_tpm_matrix) > 0
+filtered_gex_sub_tpm_matrix <- gex_sub_tpm_matrix[keep,]
+
+#draw replicates
+df_plot <- log(filtered_gex_sub_tpm_matrix[,c(1,3)]+1) #log(TPM+1)
+sample_names<-colnames(df_plot)
+colnames(df_plot)[1:2] <- c("x", "y")
+
+p_rep <- ggplot(df_plot[df_plot[[1]] > 0 | df_plot[[2]] > 0,], aes(x, y)) + #df_plot[df_plot[[1]] > 0 & df_plot[[2]] > 0
+  xlab("Captured_rep1 (Log TPM+1)") + ylab("Captured_rep2 (Log TPM+1)") +  #xlab("Captured_rep2 (Log TPM+1)") + ylab("Lysate_rep (Log TPM+1)") +
+  geom_pointdensity(method = 'neighbors') +
+  scale_color_viridis_c("# of genes",option = "mako",limits = c(0, 4000),oob = scales::oob_censor, na.value = "#DEF5E5FF") +
+  scale_x_continuous(breaks = seq(0, 11, by = 2)) + 
+  scale_y_continuous(breaks = seq(0, 11, by = 2)) +
+  theme(axis.title= element_text(size=50, colour = "black"),
+        axis.text = element_text(size=50, colour = "black"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(), 
+        axis.line = element_line(colour = "black",size=2),
+        axis.ticks = element_line(colour = "black", size = 2),
+        axis.ticks.length=unit(.4, "cm"))+
+        geom_abline(color = 'red', linetype = "dashed",lwd = 1)+
+        coord_cartesian(ylim = c(0, 11), x = c(0, 11), expand = FALSE)+
+        stat_cor(method = "pearson", cor.coef.name = "R", aes(label = ..r.label..), size = 10)
+
+#ggsave(file.path(out_path, "cap_rep12.pdf"), p_rep, dpi = 300, width = 10, height = 10)  
+```
+
+
+#DEseq2
+```{r}
+#create DEseq object
+dds_cap_bias <- DESeqDataSetFromMatrix(countData = gex_sub_cap_bias, colData = metadata_cap_bias, design = ~ group)
+dds_toxicity <- DESeqDataSetFromMatrix(countData = gex_sub_toxicity, colData = metadata_toxicity, design = ~ group)
+#filter row count sum < 10
+dds_cap_bias <- dds_cap_bias[rowSums(counts(dds_cap_bias)) >= 10,]
+dds_toxicity <- dds_toxicity[rowSums(counts(dds_toxicity)) >= 10,]
+#assign group
+dds_cap_bias$group <- factor(dds_cap_bias$group, levels = c("pp_cap","pp_cyto"))
+dds_toxicity$group <- factor(dds_toxicity$group, levels = c("pm_cyto","pp_cyto"))
+#perform DEseq2
+dds_cap_bias <- DESeq(dds_cap_bias)
+dds_toxicity <- DESeq(dds_toxicity)
+#save result
+res_cap_bias <- results(dds_cap_bias)
+res_toxicity <- results(dds_toxicity)
+
+#write.csv(res_cap_bias, "/Users/chaoyuka/Desktop/Data/For_timevault_paper/Fig1/code/res_cap_bias.csv")
+#write.csv(res_toxicity, "/Users/chaoyuka/Desktop/Data/For_timevault_paper/Fig1/code/res_toxicity.csv")
+
+#normalized counts
+normalized_dds_cap_bias <- counts(dds_cap_bias, normalized=TRUE)
+normalized_dds_toxicity <- counts(dds_toxicity, normalized=TRUE)
+
+#write.csv(normalized_dds_cap_bias, "/Users/chaoyuka/Desktop/Data/For_timevault_paper/Fig1/code/Deseq_norm_count_cap_bias")
+#write.csv(normalized_dds_toxicity, "/Users/chaoyuka/Desktop/Data/For_timevault_paper/Fig1/code/Deseq_norm_count_toxicity")
+
+```
+
+#plot toxicity volcano plot
+```{r}
+#select gene of interest if needed
+gene_of_interest = c("NA") 
+
+#select color and cut off value for plotting
+FCCutoff = 1
+pCutoff = 1e-2
+#set colors
+keyvals.colour <- ifelse(
+    res_toxicity$log2FoldChange < -1*FCCutoff & res_toxicity$padj < pCutoff, 'deepskyblue3',
+      ifelse(res_toxicity$log2FoldChange > FCCutoff & res_toxicity$padj < pCutoff, 'red',
+        'grey'))
+  keyvals.colour[is.na(keyvals.colour)] <- 'grey'
+  names(keyvals.colour)[keyvals.colour == 'red'] <- 'Downregulated'
+  names(keyvals.colour)[keyvals.colour == 'grey'] <- 'No change'
+  names(keyvals.colour)[keyvals.colour == 'deepskyblue3'] <- 'Upregulated'
+
+pvol_toxicity <- EnhancedVolcano(res_toxicity,
+    lab = rownames(res_toxicity),
+    x = 'log2FoldChange',
+    y = 'padj',
+    pCutoff = 1e-2,
+    FCcutoff = 1,
+    xlim = c(-10,10),
+    border = 'partial',
+    borderWidth = 1,
+    colCustom = keyvals.colour,
+    pointSize = 8.0,#was8
+    labSize = 7.0,#was7
+    axisLabSize= 40.0,
+    boxedLabels = FALSE, drawConnectors = TRUE,widthConnectors = 0.5,
+    legendPosition = 'none',title = NULL,subtitle = NULL,
+    gridlines.minor=FALSE, gridlines.major=FALSE)+scale_y_continuous(limits = c(0,250) ,breaks = c(0,1,2,3,50,250))+ scale_y_break(breaks = c(3,25), scales = 0.35)
+
+pvol_toxicity
+#ggsave(file.path(out_path, "toxicity.pdf"), pvol_toxicity, dpi = 300, width = 10, height = 10)
+```
+
+#plot capture bias volcano plot
+```{r}
+#select gene of interest if needed
+
+gene_of_interest = c("NEAT1","MT-CO1","MT-ND4","XIST","MALAT1","MT-RNR1","MT-RNR2","MT-CO2","PRKDC","MT-ND4L","MT-ND1","SBF1","MTATP6P1","MT-CYB","FASN","MRPS22","SELENOS","ABCA7","C19orf81","EEF2","LINC01508","ACYP2","RRN3P1","ENSG00000217455","ZNF45-AS1","TARS3","GAPDH")
+
+#select color and cut off value for plotting
+keyvals.colour <- ifelse(
+    res_cap_bias$log2FoldChange < -1 & res_cap_bias$padj < 1e-20, 'deepskyblue3',
+      ifelse(res_cap_bias$log2FoldChange >1 & res_cap_bias$padj < 1e-20, 'red',
+        'grey'))
+  keyvals.colour[is.na(keyvals.colour)] <- 'grey'
+  names(keyvals.colour)[keyvals.colour == 'red'] <- 'Downregulated'
+  names(keyvals.colour)[keyvals.colour == 'grey'] <- 'No change'
+  names(keyvals.colour)[keyvals.colour == 'deepskyblue3'] <- 'Upregulated'
+
+p_vol_capbias <- EnhancedVolcano(res_cap_bias,
+    lab = rownames(res_cap_bias),
+    x = 'log2FoldChange',
+    y = 'padj',
+    pCutoff = 1e-20,
+    FCcutoff = 1,
+    xlim = c(-10,10),
+    ylim = c(0,150),
+    border = 'full',
+    borderWidth = 1,
+    colCustom = keyvals.colour,
+    pointSize = 8.0,#was8
+    labSize = 7.0,#was7
+    axisLabSize= 40.0,
+    boxedLabels = FALSE, drawConnectors = TRUE,widthConnectors = 0.1,
+    legendPosition = 'none',title = NULL,subtitle = NULL,
+    gridlines.minor=FALSE, gridlines.major=FALSE,selectLab = gene_of_interest)
+
+#ggsave(file.path(out_path, "cap_bias_with_GAP.pdf"), p_vol_capbias, dpi = 300, width = 10, height = 10)
+
+```
+
+#plot capture bias length vs log2FC
+```{r}
+#merge log2fold change and length
+log_2_fc <- data_frame(res_cap_bias$log2FoldChange)
+log_2_fc[,2] <- row.names(res_cap_bias)
+colnames(log_2_fc)[colnames(log_2_fc) == "...2"] <- "hgnc_symbol"
+colnames(log_2_fc)[colnames(log_2_fc) == "res_cap_bias$log2FoldChange"] <- "log2FoldChange"
+log_2_fc_w_length <- inner_join(avg_isoform_length, log_2_fc, by = "hgnc_symbol")
+
+
+#plot transcript length vs fold change
+
+labels <- log_2_fc_w_length$hgnc_symbol
+ggplot(log_2_fc_w_length, aes(x = avg_length, y = log2FoldChange, label = labels)) + 
+  geom_point(size=1)+
+  xlab("transcript_length") + ylab("log2_FC (lysate vs captured)") + 
+  xlim(c(0, 8000)) + ylim(-7.5,7.5) + 
+  geom_hex(bins = 150) + scale_fill_viridis_c(option = "magma") +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "blue")+ 
+  stat_poly_line(linetype = "dashed", color = "red") +
+  stat_poly_eq(use_label("eq"),label.x = 3000,label.y = 0)+
+  stat_cor(method = "pearson", cor.coef.name = "R", aes(label = ..r.label..),label.x = 2600,label.y = -7)+
+  theme(text = element_text(size = 20))
+
+
+p_length <- ggplot(log_2_fc_w_length, aes(x = avg_length, y = log2FoldChange)) +
+  geom_hex(bins = 100) + scale_fill_viridis_c(option = "mako",limit = c(0,25), na.value = "white") +
+  xlab("transcript length (bp)") + ylab("Log<sub>2</sub> fold change") +
+  scale_x_continuous(breaks = seq(0, 5000, by = 1000)) + 
+  scale_y_continuous(breaks = seq(-8,8, by = 4)) +
+  xlim(c(0,5000)) + 
+  theme(axis.title= element_text(size=50, colour = "black"),
+        axis.text = element_text(size=50, colour = "black"),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(), 
+        axis.line = element_line(colour = "black",size=2),
+        axis.ticks = element_line(colour = "black", size = 2),
+        axis.ticks.length=unit(.4, "cm"),
+        plot.margin = unit(c(3, 3, 3, 3), "lines"))+
+        geom_hline(yintercept = 0, linetype = "dashed", color = "black",size = 1.5)+
+        coord_cartesian(ylim = c(-8,8), x = c(0,5000), expand = FALSE,clip = "off")+
+        stat_poly_line(linetype = "dashed", color = "red") +stat_poly_eq(use_label("eq"),label.x = 3000,label.y = 0)+
+        stat_cor(method = "pearson", cor.coef.name = "R", aes(label = ..r.label..),label.x = 2600,label.y = -7)
+
+
+ggsave(file.path(out_path, "FC_vs_length.pdf"), p_length, dpi = 300, width = 18, height = 12)
+
+
+```
+
+#Heatmap for capture bias
+```{r}
+# Z score plotting
+vsd2 <- assay(vst(dds_cap_bias))
+Z <- t(scale(t(vsd2)))
+
+#subset gene of intereste
+subset_Z <- Z[c("NEAT1","XIST","MALAT1","TUG1","KCNQ1OT1",
+                "MT-ND1","MT-ND2","MT-ND3","MT-ND4L","MT-ND4","MT-ND5","MT-ND6",  #complex1
+                "MT-CYB",  #complex3
+                "MT-CO1","MT-CO2", "MT-CO3",  #complex4
+                "MT-ATP6","MT-ATP8",  #complex5
+                "MT-RNR1", "MT-RNR2"   #rRNA
+                ),] 
+                
+colnames(subset_Z) <- c( "Captured1","Lysate1","Captured2","Lysate2","Captured3","Lysate3")                
+
+breaksList = seq(-1.5, 1.5, by = 0.025)
+p_heat <- pheatmap(subset_Z,       
+                  cluster_rows = FALSE,
+                  cluster_cols = TRUE,
+                  display_numbers = FALSE,
+                  cellheight = 15,
+                  cellwidth = 40,
+                  fontsize_row = 15,          
+                  fontsize_col = 15,
+                  fontsize = 15,
+                  angle_col = 45,
+                  gaps_row = c(5),
+                  treeheight_col = 20,
+                  breaks = breaksList,
+                  color = colorRampPalette(c("#1396CB", "white", "#FF5955"))(length(breaksList)))
+
+ggsave(file.path(out_path, "capturebias_heatmap.pdf"), p_heat, dpi = 300, width = 10, height = 10)
+
+```
