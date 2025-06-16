@@ -1,0 +1,295 @@
+
+
+```{r}
+library(DESeq2)
+library("dplyr")
+library("ggplot2")
+library('biomaRt')
+library(stringr)
+library(pheatmap)
+library(RColorBrewer)
+library(stats)
+library(ggpubr)
+library(ggpmisc)
+library(ggpointdensity)
+library(ggrepel)
+library(EnhancedVolcano)
+library(msigdbr)
+library(clusterProfiler)
+library("org.Hs.eg.db")
+```
+
+#data input and set output path
+```{r}
+datapath <- "/Users/chaoyuka/Desktop/Data/For_timevault_paper/Fig3/Code/all_gex_matrix_genename.txt"
+metadatapath <- "/Users/chaoyuka/Desktop/Data/For_timevault_paper/Fig3/Code/metadata_PC9.csv"
+outpath <- "/Users/chaoyuka/Desktop/Data/For_timevault_paper/Fig3/Code/"
+
+gex <- as.matrix(read.delim(datapath,sep="\t", check.names = FALSE))
+metadata <- read.csv(metadatapath,header = TRUE,row.names = "sample")
+rownames(gex) <- gex[,1]
+```
+
+#subset samples
+```{r}
+#Dx = Drug, recorded/captured
+#NDx = NoDrug, recorded/captured
+
+#Dxc = Drug, cytosol
+#NDxc = NoDrug, cytosol
+
+columns_of_interest_DND <- c("D1","D2","D3","ND1","ND2","ND3")
+columns_of_interest_DND_lysate <- c("D1c","D2c","D3c","ND1c","ND2c","ND3c")
+
+metadata_DND <- metadata[c(1,2,3,7,8,9), , drop = FALSE]
+metadata_DND_lysate <- metadata[c(4,5,6,10,11,12), , drop = FALSE]
+
+gex_sub_DND <- gex[, columns_of_interest_DND]
+gex_sub_DND_lysate <- gex[, columns_of_interest_DND_lysate]
+
+class(gex_sub_DND) <- "numeric"
+class(gex_sub_DND_lysate) <- "numeric"
+
+gex_sub_DND<-na.omit(gex_sub_DND) 
+gex_sub_DND_lysate<-na.omit(gex_sub_DND_lysate) 
+
+```
+
+#DEseq2
+```{r}
+dds_DND <- DESeqDataSetFromMatrix(countData = gex_sub_DND, colData = metadata_DND, design = ~ group)
+dds_DND_lysate <- DESeqDataSetFromMatrix(countData = gex_sub_DND_lysate, colData = metadata_DND_lysate, design = ~ group)
+
+dds_DND <- dds_DND[rowSums(counts(dds_DND)) >= 10,]
+dds_DND_lysate <- dds_DND_lysate[rowSums(counts(dds_DND_lysate)) >= 10,]
+
+dds_DND$group <- factor(dds_DND$group, levels = c("D","ND"))
+dds_DND_lysate$group <- factor(dds_DND_lysate$group, levels = c("Dc","NDc"))
+
+dds_DND <- DESeq(dds_DND)
+dds_DND_lysate <- DESeq(dds_DND_lysate)
+
+res_DND <- results(dds_DND)
+res_DND_lysate <- results(dds_DND_lysate)
+
+
+#write.csv(res_DND, "/Users/chaoyuka/Desktop/Data/mRNAcap/RNAseq/250429_newPC9117/Deseq_res_DvsND_capture")
+#write.csv(res_DND_lysate, "/Users/chaoyuka/Desktop/Data/mRNAcap/RNAseq/250429_newPC9117/Deseq_res_DvsND_lysate")
+
+
+#normalized counts
+normalized_dds_DND <- counts(dds_DND, normalized=TRUE)
+normalized_dds_DND_lysate <- counts(dds_DND_lysate, normalized=TRUE)
+
+#write.csv(normalized_dds_DND, "/Users/chaoyuka/Desktop/Data/mRNAcap/RNAseq/250429_newPC9117/Deseq_norm_count_DvsND_capture")
+#write.csv(normalized_dds_DND_lysate, "/Users/chaoyuka/Desktop/Data/mRNAcap/RNAseq/250429_newPC9117/Deseq_norm_count_DvsND_lysate")
+
+```
+
+#gene enrichment analysis
+```{r}
+#assign res for analysis
+res <- res_DND
+all_genes <- as.character(rownames(res))
+
+#Extract significant results
+signif_res <- res[res$padj < 0.05 & !is.na(res$padj) & res$log2FoldChange < -0.5, ] #for capture Padj 0.05_FC 0.5, lysate P1E-10, FC1
+signif_genes <- as.character(rownames(signif_res))
+signif_gene_fc_list <- DataFrame(signif_genes,signif_res$log2FoldChange)
+
+#sort gene list. ## if negative take abs
+geneList = abs(signif_gene_fc_list[,2])
+## named vector
+names(geneList) = as.character(signif_gene_fc_list[,1])
+## decreasing order
+geneList = sort(geneList, decreasing = TRUE)
+
+
+
+# Extract hallmark gene set human
+all_gene_sets = msigdbr(species = "Homo sapiens")
+m_t2g <- msigdbr(species = "Homo sapiens",category = "H") %>% dplyr::select(gs_name, gene_symbol)
+
+# Perform enricher using Hallmark
+em <- enricher(signif_genes, TERM2GENE=m_t2g)
+
+# plot Hallmark dot plot
+p_H_dot <- dotplot(em, showCategory=10, font.size = 14,x = "Count")+scale_color_gradient(low = "red", high = "deepskyblue3")
+
+#save dot plot
+#ggsave(file.path(outpath, "Hallmark_dot_eDcap_Pvalp05_FCp5.pdf"), p_H_dot, dpi = 300, width = 8, height = 6)
+```
+
+
+
+
+#volcano plot
+```{r}
+
+#select capture fraction
+res<-res_DND
+
+#volcano plot
+gene_of_interest = c("ANXA2","FN1","IL6","AKR1C1","LCN2","PI3","CXCL8","SAP18","PFDN2","VCX3A","MAGOH","UBE2A","LYPD2","CCL4",
+                     "IFI27","LGALS1","S100A9","S100A8","ISG15","CUTA","CASC8","MT-CO1","MT-ND4","DYNC1H1","PELP1","MUC5B")
+FCCutoff = 0.5
+pCutoff = 1e-5
+#set colors
+keyvals.colour <- ifelse(
+    res$log2FoldChange < -1*FCCutoff & res$padj < pCutoff, 'deepskyblue3',
+      ifelse(res$log2FoldChange > FCCutoff & res$padj < pCutoff, 'red',
+        'grey'))
+  keyvals.colour[is.na(keyvals.colour)] <- 'grey'
+  names(keyvals.colour)[keyvals.colour == 'red'] <- 'Downregulated'
+  names(keyvals.colour)[keyvals.colour == 'grey'] <- 'No change'
+  names(keyvals.colour)[keyvals.colour == 'deepskyblue3'] <- 'Upregulated'
+
+  
+
+#draw plot
+p_vol_DND_cap <- EnhancedVolcano(res,
+    lab = rownames(res),
+    x = 'log2FoldChange',
+    y = 'padj',
+    pCutoff = pCutoff, #lysate  captured
+    FCcutoff = FCCutoff, #lysate 0.5 captured 0.5
+    ylim = c(0,120), #120 for cpatured
+    xlim = c(-8,8),
+    border = 'full',
+    colCustom = keyvals.colour,
+    pointSize = 8.0,#was8
+    labSize = 7.0,#was7
+    axisLabSize= 30.0,
+    boxedLabels = FALSE, drawConnectors = TRUE,widthConnectors = 0.5,
+    legendPosition = 'none',title = NULL,subtitle = NULL,
+    gridlines.minor=FALSE, gridlines.major=FALSE,selectLab = gene_of_interest)
+
+#ggsave(file.path(outpath, "p_vol_DND_cap_P1Em5_FCp5.pdf"), p_vol_DND_cap, dpi = 300, width = 10, height = 10)
+
+
+res_lysate<-res_DND_lysate
+
+FCCutoff_c = 1
+pCutoff_c = 1e-10
+
+keyvals.colour <- ifelse(
+    res_lysate$log2FoldChange < -1*FCCutoff_c & res_lysate$padj < pCutoff_c, 'deepskyblue3',
+      ifelse(res_lysate$log2FoldChange > FCCutoff_c & res_lysate$padj < pCutoff_c, 'red',
+        'grey'))
+  keyvals.colour[is.na(keyvals.colour)] <- 'grey'
+  names(keyvals.colour)[keyvals.colour == 'red'] <- 'Downregulated'
+  names(keyvals.colour)[keyvals.colour == 'grey'] <- 'No change'
+  names(keyvals.colour)[keyvals.colour == 'deepskyblue3'] <- 'Upregulated'
+
+
+p_vol_DND_lys <- EnhancedVolcano(res_lysate,
+    lab = rownames(res_lysate),
+    x = 'log2FoldChange',
+    y = 'padj',
+    pCutoff = pCutoff_c, 
+    FCcutoff = FCCutoff_c, 
+    ylim = c(0,300), 
+    xlim = c(-10,10),
+    border = 'full',
+    colCustom = keyvals.colour,
+    pointSize = 4.0,#was8
+    labSize = 4.0,#was7
+    axisLabSize= 30.0,
+    boxedLabels = FALSE, drawConnectors = TRUE,widthConnectors = 0.5,
+    legendPosition = 'none',title = NULL,subtitle = NULL,
+    gridlines.minor=FALSE, gridlines.major=FALSE)#,selectLab = gene_of_interest)
+
+#ggsave(file.path(outpath, "p_vol_DND_lys.pdf"), p_vol_DND_lys, dpi = 300, width = 10, height = 10)
+
+#Export marker genes based on your selected P-val and FC
+#persister_gene_list_FCmp5_P1Em5 <- res[res$padj < 1E-5 & !is.na(res$padj) & res$log2FoldChange < -0.5, ]
+#write.csv(persister_gene_list_FCmp5_P1Em5, "/Users/chaoyuka/Desktop/Data/For_timevault_paper/Fig3/Code/persister_gene_list_FCmp5_P1Em5.csv")
+
+```
+
+
+
+#Heatmap
+```{r}
+dds <- dds_DND
+
+# Z score plotting
+vsd2 <- assay(vst(dds))
+Z <- t(scale(t(vsd2)))
+#pheatmap(Z)
+
+OxPhos_genes_in_Drug_recorded <- c("NDUFS6","NDUFS4","NDUFA8","NDUFV2","NDUFA5","NDUFA9","SDHB","SDHC","CYCS","UQCRFS1","COX6A1","COX7B","COX6C","ATP5F1B","ATP6V1G1","ATP6V1D","MRPL35","MRPS22","MRPS11","MRPS12","IDH3B","GOT2","ETFA","MDH2","FDX1","PRDX3","ECHS1","CYB5R3","HCCS","FXN","ACAA2","POLR2F","GRPEL1","ACAT1","ISCU","LDHA","LDHB")
+
+Spindle_gene_in_ND_captured <- c("TOP2A","TPX2","KIF2C","NOTCH2","CEP131","CENPF","CENPE","CENPJ","CEP250","INCENP","BUB1","GSN","KIF5B","VCL","CTTN","NUMA1","ESPL1","RHOF","CLIP1","DYNC1H1","MYO9B","MYH9","ACTN4","KIF3B","PCNT","SUN2","TUBGCP6","SMC1A","FLNA")
+
+G2M_gene_in_ND_captured <- c("CDC20","MCM3","MARCKS","RAD21","KIF5B","MKI67","CCND1","POLE","TLE3","E2F1","E2F4","TOP1","MYBL2","ATRX")
+
+
+All_together_truncated <- c("NDUFS6","NDUFS4","NDUFA8","SDHB","SDHC","COX6A1","COX7B","COX6C","ATP5F1B","ATP6V1G1","MRPL35","MRPS12","ETFA","MDH2","FDX1","PRDX3","ECHS1","CYB5R3","HCCS","FXN","ACAA2","LDHA",
+                  "TOP2A","TPX2","KIF2C","KIF5B","KIF3B","CEP131","CEP250","CENPF","CENPE","CENPJ","INCENP","BUB1","NUMA1",
+                  "CDC20","MCM3","MARCKS","RAD21","MKI67","CCND1","POLE","TLE3","E2F1","E2F4","TOP1","MYBL2","ATRX")
+
+subset_Z <- Z[All_together_truncated, ]
+
+breaksList = seq(-1.5,1.5, by = 0.025)
+
+p_heat <- pheatmap(subset_Z,       
+        cluster_rows = FALSE,
+        cluster_cols = FALSE,
+        display_numbers = FALSE,
+        cellheight = 5,
+        cellwidth = 25,
+        fontsize_row = 5,          
+        fontsize_col = 10,
+        fontsize = 5,
+        angle_col = 45,
+        #gaps_row = c(9),
+        treeheight_col = 20,
+        breaks = breaksList,
+        color = colorRampPalette(c("#1396CB", "white", "#FF5955"))(length(breaksList)))
+
+#save heat map
+#ggsave(file.path(outpath, "Heatmap_DND_capture_OXPHOS_SPINDLE_G2M_trunc.pdf"), p_heat, dpi = 300, width = 5, height = 10)
+
+```
+
+#plot 2D dot plot for enrichment
+```{r}
+Enrichment_analysis <- read.table(pipe("pbpaste"), sep="\t", header = TRUE)
+
+Enrichment_analysis[Enrichment_analysis == ''] <- NA
+
+Enrich_plot <- ggplot(Enrichment_analysis, aes(x = Enrichin, y = Enrichedpathways, color = padj, size = GeneRatio)) +
+              geom_point(alpha = 0.8,na.rm = TRUE) +
+              labs(
+                title = "",
+                x = "sample",
+                y = "Pathways",
+                color = "padj",
+                size = "GeneRatio"
+              ) +
+              theme_bw() +
+              theme(axis.text.x = element_text(angle = 45, hjust = 1),
+                    panel.grid.minor = element_blank(),panel.grid.major = element_blank()) +
+              scale_color_gradient(low = "red",  high = "lightgrey",limits = c(1E-20,0.05))+
+              scale_size(range = c(2,10))
+
+
+#ggsave(file.path(outpath, "Enrichplot_Hallmark_dot_all.pdf"), Enrich_plot, dpi = 300, width = 6, height = 6)
+```
+
+
+
+
+
+#select out marker genes in lysate res to check the change after treating drug
+```{r}
+#copy gene name from persister genes
+gene_list <- rownames(persister_gene_list_FCmp5_P1Em5)
+#subset persister genes from lysate/present transcriptome Deseq result
+subset_res_DND_lysate <- res_DND_lysate[rownames(res_DND_lysate) %in% gene_list, ]
+#save csv
+#write.csv(subset_res_DND_lysate, "/Users/chaoyuka/Desktop/Data/For_timevault_paper/Fig3/Code/subset_res_DND_lysate.csv")
+
+```
+
