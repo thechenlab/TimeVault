@@ -1,0 +1,270 @@
+
+```{r}
+library(Seurat)
+#packageVersion("Seurat")
+library(sctransform)
+library(tidyr)
+library(dplyr)
+library(patchwork)
+library(viridis)
+library(tidyverse)
+library(ggplot2)
+library(presto)
+library(msigdbr)
+library(fgsea)
+
+```
+#Read data
+```{r}
+set.seed = 123
+
+#read h5 from 10x cell ranger output
+PC9.data <- Read10X_h5(filename = "/Users/chaoyuka/Desktop/Data/mRNAcap/PC9_single_cell/filtered_feature_bc_matrix.h5")
+output_path <- "/Users/chaoyuka/Desktop/Data/mRNAcap/PC9_single_cell/"
+
+#create Seurat object
+PC9_nofilter <- CreateSeuratObject(counts = PC9.data, project = "PC9_sc", min.cells = 3, min.features = 200)
+PC9 <- CreateSeuratObject(counts = PC9.data, project = "PC9_sc", min.cells = 3, min.features = 200)
+
+#read timevault experiment DEseq result for top persister genes (sorted by log2FC with excel, negative means enriched in persister)
+TV_datapath <- '/Users/chaoyuka/Desktop/Data/mRNAcap/PC9_single_cell/Deseq_res_DvsND_capture_subsetP1E5_FC<m0.5.csv'
+TV_data <- read.csv(TV_datapath,header = TRUE,row.names = "Gene")
+
+#read saved rds
+#PC9 <- readRDS("/Users/chaoyuka/Desktop/Data/mRNAcap/PC9_single_cell/PC9.rds")
+
+```
+
+#QC
+```{r}
+PC9_nofilter[["percent.mt"]] <- PercentageFeatureSet(PC9_nofilter, pattern = "^MT-")
+
+p_quality_bar_plot <- VlnPlot(PC9_nofilter, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+#ggsave(p_quality_bar_plot, filename = "/Users/chaoyuka/Desktop/Data/mRNAcap/PC9_single_cell/p_quality_bar_plot.pdf", height = 5, width = 8,dpi = 300)
+
+
+#extract feature data from seurat
+feature_data <- FetchData(PC9_nofilter, vars = c("nCount_RNA", "percent.mt"))
+feature_data$color <- ifelse(feature_data$nCount_RNA > 2500 & feature_data$percent.mt < 15, "tomato", "grey")
+
+#plot filtering
+p_count_vs_mito <- ggplot(feature_data, aes(x = nCount_RNA, y = percent.mt, color = color)) +
+  geom_point() +
+  geom_vline(xintercept = 2500, color = "red", linetype = "dashed") +  # Vertical line at x=2500
+  geom_hline(yintercept = 15, color = "red", linetype = "dashed") +    # Horizontal line at y=15
+  geom_hline(yintercept = 0, color = "black", size = 1) +  # Horizontal line at y=0
+  geom_vline(xintercept = 0, color = "black", size = 1) +
+  scale_color_identity() +  # Use the color directly from the data
+  theme_minimal() +  # Optional: for a cleaner look
+  labs(title = "Feature Plot", x = "nCount_RNA", y = "percent.mt")+
+  theme(
+    text = element_text(size = 15),  # Increase text size
+    axis.title = element_text(size = 15),  # Increase axis titles size
+    axis.text = element_text(size = 15),  # Increase axis ticks text size
+    panel.grid.major = element_blank(),  # Remove major grid lines
+    panel.grid.minor = element_blank(),  # Remove minor grid lines
+    panel.background = element_blank(),    # Remove plot background
+    axis.ticks = element_line(color = "black", size = 1)  # Ensure tick marks are visible
+    )
+
+#ggsave(p_count_vs_mito, filename = "/Users/chaoyuka/Desktop/Data/mRNAcap/PC9_single_cell/p_count_vs_mito.pdf", height = 10, width = 12,dpi = 300)
+
+#filter based on plot
+PC9 <- subset(PC9_nofilter, subset = nFeature_RNA > 2500 & percent.mt < 15 & nCount_RNA > 2500)
+```
+
+#Normalization
+```{r}
+PC9 <- NormalizeData(PC9, normalization.method = "LogNormalize", scale.factor = 10000)
+```
+
+#Identification of highly variable features
+```{r}
+PC9 <- FindVariableFeatures(PC9, selection.method = "vst", nfeatures = 2000)
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(PC9), 50)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(PC9)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE)
+plot1 + plot2
+plot2
+#ggsave(plot2, filename = "/Users/chaoyuka/Desktop/Data/mRNAcap/PC9_single_cell/PC9_Var_genes_highres.pdf", height = 15, width = 15,dpi = 300)
+
+
+```
+#Scaling the data and clustering
+```{r}
+all.genes <- rownames(PC9)
+PC9 <- ScaleData(PC9, features = all.genes)
+```
+#PCA
+```{r}
+PC9 <- RunPCA(PC9, features = VariableFeatures(object = PC9))
+print(PC9[["pca"]], dims = 1:10, nfeatures = 5)
+VizDimLoadings(PC9, dims = 1:10, reduction = "pca")
+DimPlot(PC9, reduction = "pca") + NoLegend()
+DimHeatmap(PC9, dims = 1, cells = 500, balanced = TRUE)
+
+ElbowPlot(PC9)
+
+```
+#cluster the cells
+```{r}
+PC9 <- FindNeighbors(PC9, dims = 1:30)
+PC9 <- FindClusters(PC9, resolution = 0.5)
+head(Idents(PC9), 10)
+```
+
+
+#UMAP ot tSNE
+```{r}
+PC9 <- RunUMAP(PC9, dims = 1:30)
+UMAP_plot <- DimPlot(PC9, reduction = "umap", label = T)
+ggsave(UMAP_plot, filename = "/Users/chaoyuka/Desktop/Data/mRNAcap/PC9_single_cell/PC9_UMAP.pdf", height = 7, width = 7,dpi = 300)
+
+#saveRDS(PC9, file = "/Users/chaoyuka/Desktop/Data/mRNAcap/PC9_single_cell/PC9.rds")
+#PC9 <- readRDS("/Users/chaoyuka/Desktop/Data/mRNAcap/PC9_single_cell/PC9.rds")
+
+```
+
+
+#Finding differentially expressed features (cluster biomarkers)
+```{r}
+#plot mito and other features in UMAP
+p_QC_UMAP <- FeaturePlot(PC9, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"))
+#ggsave(p_QC_UMAP, filename = "/Users/chaoyuka/Desktop/Data/mRNAcap/PC9_single_cell/p_UMI_mito.pdf", height = 10, width = 10,dpi = 300)
+
+
+#plot top persister markers
+p_persister_UMAP_plot <- FeaturePlot(PC9, features = c("FN1","CXCL8","PI3","AKR1C1","LCN2"))
+#ggsave(p_persister_UMAP_plot, filename = "/Users/chaoyuka/Desktop/Data/mRNAcap/PC9_single_cell/p_persister_UMAP_plot.pdf", height = 10, width = 10,dpi = 300)
+
+```
+
+#extract OXPHOS mitotic_spindle G2M genes from Hallmark
+```{r}
+# Get all hallmark gene sets for human
+hallmarks <- msigdbr(species = "Homo sapiens", category = "H")
+
+# Filter for OXPHOS genes
+oxphos_genes <- hallmarks %>%
+    filter(gs_name == "HALLMARK_OXIDATIVE_PHOSPHORYLATION") %>%
+    pull(gene_symbol)
+
+oxphos_genes_not_in_single_cell <- c("MAOB")
+oxphos_genes <- oxphos_genes[!oxphos_genes %in% oxphos_genes_not_in_single_cell]
+
+# Mitotic Spindle genes
+mitotic_spindle_genes <- hallmarks %>%
+  filter(gs_name == "HALLMARK_MITOTIC_SPINDLE") %>%
+  pull(gene_symbol)
+
+mitotic_spindle_genes_not_in_single_cell <- c("MID1IP1")
+mitotic_spindle_genes <- mitotic_spindle_genes[!mitotic_spindle_genes %in% mitotic_spindle_genes_not_in_single_cell]
+
+# G2M Checkpoint genes
+g2m_genes <- hallmarks %>%
+  filter(gs_name == "HALLMARK_G2M_CHECKPOINT") %>%
+  pull(gene_symbol)
+
+g2m_genes_not_in_single_cell <- c("PTTG3P")
+g2m_genes <- g2m_genes[!g2m_genes %in% g2m_genes_not_in_single_cell]
+```
+
+#Top gene from TV data
+```{r}
+#take top 50 genes enriched in persister by fold change
+persister_top50_byFC <- row.names(TV_data[1:120,]) #need to remove CCL4, WFDC21P,RN7SL128P,ENSG00000243779,RPF2P1,RNU6-6P,ENSG00000215154,RAC1P2
+genes_not_in_single_cell <- c("CCL4", "WFDC21P","RN7SL128P","ENSG00000243779","RPF2P1","RNU6-6P","ENSG00000215154","RAC1P2","LINC00476","RPL6P27","ENSG00000234742")
+persister_top50_byFC_clean <- persister_top50_byFC[!persister_top50_byFC %in% genes_not_in_single_cell]
+
+
+mygenes <- list(
+  Module_top50 = persister_top50_byFC_clean[1:50],
+  Module_top100 = persister_top50_byFC_clean[1:100],
+  Module_paper = c("PI3","AKR1C1","FN1","LCN2","CXCL8"),
+  Module_Oxphos = c(),
+  Module_Spindle = c(),
+  Module_G2M = c(),
+  Module_Oxphos_all = oxphos_genes,
+  Module_spindle_all = mitotic_spindle_genes,
+  Module_g2m_all = g2m_genes
+)
+
+# Calculate module scores
+PC9 <- AddModuleScore(
+  object = PC9,
+  features = mygenes,
+  name = "CustomModuleScore"
+)
+
+#UMAP plot
+UMAP_plot <- DimPlot(PC9, reduction = "umap", label = T)
+ggsave(UMAP_plot, filename = "/Users/chaoyuka/Desktop/Data/mRNAcap/PC9_single_cell/PC9_UMAP.pdf", height = 7, width = 7,dpi = 300)
+
+
+#plot module metagenes
+p_top50 <- FeaturePlot(PC9, "CustomModuleScore1", order = TRUE, pt.size = 1) +scale_color_gradientn(colors = c("grey", "red2"), limits = c(0.1, 0.25))#Top50
+FeaturePlot(PC9, "CustomModuleScore2", order = TRUE, pt.size = 1) +scale_color_gradientn(colors = c("grey", "red2"), limits = c(0.1, 0.2))#Top100
+p_selected <- FeaturePlot(PC9, "CustomModuleScore3", order = TRUE, pt.size = 1) +scale_color_gradientn(colors = c("grey", "red2"), limits = c(0.1, 1.5))#selected_5_perturbed
+
+p_all_oxphos <- FeaturePlot(PC9, "CustomModuleScore7", order = TRUE, pt.size = 1) +scale_color_gradientn(colors = c("grey", "red2"), limits = c(0.3, 0.5))#all hallmark oxphos
+p_all_spindle <- FeaturePlot(PC9, "CustomModuleScore8", order = TRUE, pt.size = 1) +scale_color_gradientn(colors = c("grey", "red2"), limits = c(0.05, 0.3))#all hallmark spindle
+p_all_g2m <- FeaturePlot(PC9, "CustomModuleScore9", order = TRUE, pt.size = 1) +scale_color_gradientn(colors = c("grey", "red2"), limits = c(0.2, 0.5))#all hallmark g2m
+
+#save plot
+#ggsave(p_top50, filename = "/Users/chaoyuka/Desktop/Data/mRNAcap/PC9_single_cell/PC9_UMAP_top50_from_TV.pdf", height = 7, width = 7,dpi = 300)
+#ggsave(p_all_oxphos, filename = "/Users/chaoyuka/Desktop/Data/mRNAcap/PC9_single_cell/PC9_UMAP_all_oxphos.pdf", height = 7, width = 7,dpi = 300)
+#ggsave(p_all_spindle, filename = "/Users/chaoyuka/Desktop/Data/mRNAcap/PC9_single_cell/PC9_UMAP_all_spindle.pdf", height = 7, width = 7,dpi = 300)
+#ggsave(p_all_g2m, filename = "/Users/chaoyuka/Desktop/Data/mRNAcap/PC9_single_cell/PC9_UMAP_all_g2m.pdf", height = 7, width = 7,dpi = 300)
+
+
+#plot module metagenes in blue
+p_top50b <- FeaturePlot(PC9, "CustomModuleScore1", pt.size = 0.5,min.cutoff = 0,max.cutoff = 0.2,cols = c("grey90", "blue"))
+p_selectedb <- FeaturePlot(PC9,  features = "CustomModuleScore3", pt.size = 0.5,min.cutoff = 0,max.cutoff = 1,cols = c("grey90", "blue"))
+p_all_oxphosb <- FeaturePlot(PC9,  features = "CustomModuleScore7", pt.size = 0.5,min.cutoff = 0.25,max.cutoff = 0.35,cols = c("grey90", "blue"))
+p_all_g2mb <- FeaturePlot(PC9,  features = "CustomModuleScore9", pt.size = 0.5,min.cutoff = 0,max.cutoff = 0.4,cols = c("grey90", "blue"))
+
+#save plot
+#ggsave(p_top50b, filename = "/Users/chaoyuka/Desktop/Data/mRNAcap/PC9_single_cell/PC9_UMAP_top50_from_TVb.pdf", height = 7, width = 7,dpi = 300)
+#ggsave(p_selectedb, filename = "/Users/chaoyuka/Desktop/Data/mRNAcap/PC9_single_cell/PC9_UMAP_top50_from_TVb.pdf", height = 7, width = 7,dpi = 300)
+#ggsave(p_all_oxphosb, filename = "/Users/chaoyuka/Desktop/Data/mRNAcap/PC9_single_cell/PC9_UMAP_all_oxphosb.pdf", height = 7, width = 7,dpi = 300)
+#ggsave(p_all_g2mb, filename = "/Users/chaoyuka/Desktop/Data/mRNAcap/PC9_single_cell/PC9_UMAP_all_g2mb.pdf", height = 7, width = 7,dpi = 300)
+
+
+
+
+#violin plot
+VlnPlot(PC9, features = c("CustomModuleScore1")) + ggtitle("Top50")
+VlnPlot(PC9, features = c("CustomModuleScore2")) + ggtitle("Top100")
+VlnPlot(PC9, features = c("CustomModuleScore3")) + ggtitle("selected_purturb")
+VlnPlot(PC9, features = c("CustomModuleScore4")) + ggtitle("Oxphos_D")
+VlnPlot(PC9, features = c("CustomModuleScore5")) + ggtitle("Mitotic_spindle_TV_ND")
+VlnPlot(PC9, features = c("CustomModuleScore6")) + ggtitle("G2M_TV_ND")
+VlnPlot(PC9, features = c("CustomModuleScore7")) + ggtitle("all hallmark oxphos")
+VlnPlot(PC9, features = c("CustomModuleScore8")) + ggtitle("all hallmark spindle")
+VlnPlot(PC9, features = c("CustomModuleScore9")) + ggtitle("all hallmark g2m")
+
+#individual gene UMAP
+p_AKR1C1 <- FeaturePlot(PC9, features = "AKR1C1", pt.size = 1) +scale_color_gradientn(colors = c("grey90", "blue3"), limits = c(2, 4))
+p_PI3 <- FeaturePlot(PC9, features = "PI3", pt.size = 1) +scale_color_gradientn(colors = c("grey", "red2"), limits = c(1, 4))
+p_CXCL8 <- FeaturePlot(PC9, features = "CXCL8", pt.size = 1) +scale_color_gradientn(colors = c("grey", "red2"), limits = c(0.01, 0.3))
+p_LCN2 <- FeaturePlot(PC9, features = "LCN2", pt.size = 1) +scale_color_gradientn(colors = c("grey", "red2"), limits = c(1.5, 3.5))
+p_FN1 <- FeaturePlot(PC9, features = "FN1", pt.size = 1) +scale_color_gradientn(colors = c("grey", "red2"), limits = c(0.1, 1.5))
+
+p_AKR1C1 <- FeaturePlot(PC9,  features = "AKR1C1",pt.size = 0.5,min.cutoff = 1,max.cutoff = 3.5,cols = c("grey90", "blue"))
+p_PI3 <- FeaturePlot(PC9,  features = "PI3",pt.size = 0.5,min.cutoff = 1,max.cutoff = 3,cols = c("grey90", "blue"))
+p_CXCL8 <- FeaturePlot(PC9,  features = "CXCL8",pt.size = 0.5,min.cutoff = 0,max.cutoff = 0.5,cols = c("grey90", "blue"))
+p_LCN2 <- FeaturePlot(PC9,  features = "LCN2",pt.size = 0.5,min.cutoff = 1.5,max.cutoff = 3,cols = c("grey90", "blue"))
+p_FN1 <- FeaturePlot(PC9,  features = "FN1",pt.size = 0.5,min.cutoff = 0,max.cutoff = 1,cols = c("grey90", "blue"))
+
+
+
+ggsave(p_AKR1C1, filename = "/Users/chaoyuka/Desktop/Data/mRNAcap/PC9_single_cell/PC9_UMAP_AKR1C1_b.pdf", height = 7, width = 7,dpi = 300)
+ggsave(p_PI3, filename = "/Users/chaoyuka/Desktop/Data/mRNAcap/PC9_single_cell/PC9_UMAP_PI3_b.pdf", height = 7, width = 7,dpi = 300)
+ggsave(p_CXCL8, filename = "/Users/chaoyuka/Desktop/Data/mRNAcap/PC9_single_cell/PC9_UMAP_CXCL8_b.pdf", height = 7, width = 7,dpi = 300)
+ggsave(p_LCN2, filename = "/Users/chaoyuka/Desktop/Data/mRNAcap/PC9_single_cell/PC9_UMAP_LCN2_b.pdf", height = 7, width = 7,dpi = 300)
+ggsave(p_FN1, filename = "/Users/chaoyuka/Desktop/Data/mRNAcap/PC9_single_cell/PC9_UMAP_FN1_b.pdf", height = 7, width = 7,dpi = 300)
+```
